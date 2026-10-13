@@ -1,0 +1,17 @@
+# Local Gmail OAuth configuration and tokens
+config/gmail.env
+config/sheets.env
+config/vaultwarden.env
+config/ntfy.env
+config/searxng.env
+config/ntfy/server.yml
+secrets/gmail/
+secrets/app/
+secrets/bitwarden_master_password
+state/
+models/
+data/
+.env
+config/discovery.json
+__pycache__/
+*.pyc

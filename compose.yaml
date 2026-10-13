@@ -1,0 +1,215 @@
+name: job-bot
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python3", "scripts/web_app.py"]
+    restart: unless-stopped
+    init: true
+    user: "${JOB_BOT_UID:-1000}:${JOB_BOT_GID:-1000}"
+    environment:
+      WEB_HOST_BIND: "${WEB_HOST_BIND:-127.0.0.1}"
+      WEB_REMOTE_BIND_ACK: "${WEB_REMOTE_BIND_ACK:-}"
+      WEB_LISTEN_HOST: 0.0.0.0
+      WEB_PORT: "8080"
+      APP_STATE_DIR: /app/state
+      APP_PRIVATE_SECRETS_DIR: /app/private-secrets
+    ports:
+      - "${WEB_HOST_BIND:-127.0.0.1}:${WEB_HOST_PORT:-8080}:8080"
+    volumes:
+      - ./state:/app/state
+      - ./secrets/app:/app/private-secrets
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ntfy:
+    image: binwiederhier/ntfy@sha256:8563a39da2f5a47360618b2ab9200239c76b37f4145f6d627d9ab4368abd23f0
+    command: ["serve"]
+    restart: unless-stopped
+    user: "${JOB_BOT_UID:-1000}:${JOB_BOT_GID:-1000}"
+    environment:
+      TZ: America/New_York
+    ports:
+      - "127.0.0.1:8090:80"
+    volumes:
+      - ./config/ntfy/server.yml:/etc/ntfy/server.yml:ro
+      - ./data/ntfy/cache:/var/cache/ntfy
+      - ./data/ntfy/lib:/var/lib/ntfy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -Eo '\"healthy\"\\s*:\\s*true' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    init: true
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  searxng:
+    image: searxng/searxng@sha256:ddd642cae6eac75412938fd846ddbf440a2df029cfeae8a562b8b205f4e35e25
+    restart: unless-stopped
+    env_file:
+      - ./config/searxng.env
+    environment:
+      SEARXNG_BASE_URL: http://searxng:8080/
+      SEARXNG_LIMITER: "false"
+    expose:
+      - "8080"
+    volumes:
+      - ./config/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - ./data/searxng:/var/cache/searxng
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  job-bot:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    user: "${JOB_BOT_UID:-1000}:${JOB_BOT_GID:-1000}"
+    env_file:
+      - ./config/gmail.env
+      - ./config/sheets.env
+      - ./config/vaultwarden.env
+      - ./config/ntfy.env
+    environment:
+      NTFY_SERVER_URL: http://ntfy:80
+      BW_PASSWORD_FILE: /run/secrets/bitwarden_master_password
+    secrets:
+      - bitwarden_master_password
+    depends_on:
+      ntfy:
+        condition: service_healthy
+    volumes:
+      - ./config/gmail.env:/app/config/gmail.env:ro
+      - ./config/sheets.env:/app/config/sheets.env:ro
+      - ./secrets/gmail:/app/secrets/gmail
+      - ./state:/app/state
+      - ./data/bitwarden:/home/node/.config
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  discovery:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python3", "scripts/discovery_worker.py", "--watch"]
+    restart: unless-stopped
+    init: true
+    user: "${JOB_BOT_UID:-1000}:${JOB_BOT_GID:-1000}"
+    environment:
+      APP_STATE_DIR: /app/state
+      APP_PRIVATE_SECRETS_DIR: /app/private-secrets
+      DISCOVERY_INTERVAL_SECONDS: "${DISCOVERY_INTERVAL_SECONDS:-60}"
+      SEARXNG_URL: http://searxng:8080
+      LOCAL_LLM_BASE_URL: "${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}"
+      LOCAL_LLM_MODEL: "${LOCAL_LLM_MODEL:-gemma4:e2b}"
+    depends_on:
+      searxng:
+        condition: service_healthy
+      embedding-ranker:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./state:/app/state
+      - ./secrets/app:/app/private-secrets:ro
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  embedding-ranker:
+    build:
+      context: .
+      dockerfile: Dockerfile.embedding
+    restart: unless-stopped
+    init: true
+    user: "${JOB_BOT_UID:-1000}:${JOB_BOT_GID:-1000}"
+    volumes:
+      - ./models/embeddinggemma:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30m
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  applier:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_APPLICATION_VNC: "1"
+    command: ["python3", "scripts/application_worker.py"]
+    restart: unless-stopped
+    init: true
+    user: "${JOB_BOT_UID:-1000}:${JOB_BOT_GID:-1000}"
+    ports:
+      - "127.0.0.1:5900:5900"
+      - "127.0.0.1:6080:6080"
+    security_opt:
+      - seccomp=./docker/applier-seccomp.json
+    shm_size: "512m"
+    environment:
+      APP_STATE_DIR: /app/state
+      APP_PRIVATE_SECRETS_DIR: /app/private-secrets
+      LOCAL_LLM_BASE_URL: "${LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}"
+      APPLICATION_LLM_MODEL: "${APPLICATION_LLM_MODEL:-gemma4:e4b}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./state:/app/state
+      - ./secrets/app:/app/private-secrets
+    tmpfs:
+      - /app/state/application-tmp:rw,nosuid,nodev,noexec,size=16m,mode=0700,uid=${JOB_BOT_UID:-1000},gid=${JOB_BOT_GID:-1000}
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  tools:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["python3"]
+    init: true
+    user: "${JOB_BOT_UID:-1000}:${JOB_BOT_GID:-1000}"
+    volumes:
+      - ./config:/app/config
+      - ./secrets/gmail:/app/secrets/gmail
+      - ./state:/app/state
+
+secrets:
+  bitwarden_master_password:
+    file: ./secrets/bitwarden_master_password

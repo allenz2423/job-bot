@@ -1,0 +1,7 @@
+base-url: "http://localhost:8090"
+cache-file: "/var/cache/ntfy/cache.db"
+auth-file: "/var/lib/ntfy/user.db"
+auth-default-access: "deny-all"
+# Replace the placeholder with the generated topic from config/ntfy.env.
+auth-access:
+  - "*:jobbot-replace-with-generated-topic:rw"

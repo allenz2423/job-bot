@@ -1,0 +1,9 @@
+.git
+.env
+config/
+secrets/
+state/
+models/
+data/
+__pycache__/
+*.pyc

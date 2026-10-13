@@ -1,0 +1,14 @@
+use_default_settings: true
+
+general:
+  instance_name: Job Bot Search
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "overridden-by-SEARXNG_SECRET"
+  limiter: false
+  image_proxy: false
